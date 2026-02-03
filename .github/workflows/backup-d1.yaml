@@ -35,6 +35,7 @@ jobs:
                   WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
                   WEBDAV_USER: ${{ secrets.WEBDAV_USER }}
                   WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
+                  GH_BACKUP_TOKEN: ${{ secrets.GH_BACKUP_TOKEN }}
               run: |
                   # Check S3 backend
                   if [[ -n "$S3_ACCESS_KEY_ID" && -n "$S3_SECRET_ACCESS_KEY" && -n "$S3_BUCKET" && -n "$S3_REGION" ]]; then
@@ -52,6 +53,15 @@ jobs:
                   else
                     echo "WEBDAV_ENABLED=false" >> $GITHUB_OUTPUT
                     echo "⚠️ WebDAV backend: disabled (missing credentials)"
+                  fi
+
+                  # Check GitHub backend
+                  if [[ -n "$GH_BACKUP_TOKEN" ]]; then
+                    echo "GITHUB_ENABLED=true" >> $GITHUB_OUTPUT
+                    echo "✅ GitHub backend: enabled"
+                  else
+                    echo "GITHUB_ENABLED=false" >> $GITHUB_OUTPUT
+                    echo "⚠️ GitHub backend: disabled (missing credentials)"
                   fi
 
             - name: Get current date
@@ -209,6 +219,45 @@ jobs:
                   rclone delete "webdav:${WEBDAV_BASE_PATH}/production/" -v --min-age ${{ env.BACKUP_RETENTION_DAYS }}d
 
                   echo "✅ Cleanup completed"
+
+            - name: Upload to GitHub Backup Repo
+              if: steps.backends.outputs.GITHUB_ENABLED == 'true'
+              env:
+                  GH_TOKEN: ${{ secrets.GH_BACKUP_TOKEN }}
+                  GH_USER: "3914287198"
+                  GH_REPO: "qlbf"
+                  GH_TARGET_DIR: "liulanqi-mima_backups"
+                  BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+              run: |
+                  # Determine filename
+                  if [ -n "$BACKUP_ENCRYPTION_KEY" ]; then
+                    BACKUP_FILE="vault1_prod_${{ steps.date.outputs.date }}.sql.gz.enc"
+                  else
+                    BACKUP_FILE="vault1_prod_${{ steps.date.outputs.date }}.sql.gz"
+                  fi
+
+                  echo "Cloning target repository..."
+                  # Use a token with write access to the target repo
+                  git clone --depth 1 "https://$GH_USER:$GH_TOKEN@github.com/$GH_USER/$GH_REPO.git" target_repo
+                  
+                  # Create target directory if not exists
+                  mkdir -p target_repo/$GH_TARGET_DIR
+                  
+                  # Copy backup file
+                  cp "$BACKUP_FILE" target_repo/$GH_TARGET_DIR/
+                  
+                  cd target_repo
+                  git config user.name "GitHub Action Backup"
+                  git config user.email "action@github.com"
+                  
+                  # Add and commit
+                  git add "$GH_TARGET_DIR/$BACKUP_FILE"
+                  git commit -m "Backup: $BACKUP_FILE"
+                  
+                  # Push
+                  git push
+                  
+                  echo "✅ Backup pushed to GitHub: $GH_USER/$GH_REPO/$GH_TARGET_DIR/$BACKUP_FILE"
 
     backup-dev:
         name: Backup Dev D1 Database
