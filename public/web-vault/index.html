@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client Portal - Access Control</title>
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --primary-hover: #1d4ed8;
+            --bg-color: #f8fafc;
+            --text-color: #1e293b;
+            --border-color: #e2e8f0;
+        }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .login-card {
+            background: white;
+            padding: 2.5rem;
+            border-radius: 12px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 400px;
+            border: 1px solid var(--border-color);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin: 0;
+            color: #0f172a;
+        }
+        .header p {
+            font-size: 0.875rem;
+            color: #64748b;
+            margin-top: 0.5rem;
+        }
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+        label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+        input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 1rem;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+        }
+        input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            ring: 2px solid var(--primary-color);
+        }
+        button {
+            width: 100%;
+            padding: 0.75rem;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: var(--primary-hover);
+        }
+        button:disabled {
+            background-color: #94a3b8;
+            cursor: not-allowed;
+        }
+        #message {
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            text-align: center;
+            min-height: 1.25rem;
+        }
+        .error { color: #ef4444; }
+        .success { color: #10b981; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="header">
+            <h1>Secure Access</h1>
+            <p>Please enter your credentials to continue</p>
+        </div>
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="email">Username / Email</label>
+                <input type="email" id="email" required placeholder="name@example.com">
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" required placeholder="••••••••">
+            </div>
+            <button type="submit" id="submitBtn">Sign In</button>
+        </form>
+        <div id="message"></div>
+        
+        <div id="successContent" class="hidden" style="text-align: center; margin-top: 1rem;">
+            <p class="success">Authentication successful.</p>
+            <p style="font-size: 0.75rem; color: #64748b;">Redirecting to dashboard...</p>
+        </div>
+    </div>
+
+    <script>
+        const loginForm = document.getElementById('loginForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const messageDiv = document.getElementById('message');
+        const successContent = document.getElementById('successContent');
+
+        async function hashPassword(password, email, kdf, iterations, memory, parallelism) {
+            const enc = new TextEncoder();
+            const passwordBytes = enc.encode(password);
+            const saltBytes = enc.encode(email.toLowerCase());
+
+            let masterKey;
+            if (kdf === 0) { // PBKDF2
+                const baseKey = await crypto.subtle.importKey(
+                    'raw', passwordBytes, 'PBKDF2', false, ['deriveBits']
+                );
+                masterKey = await crypto.subtle.deriveBits(
+                    { name: 'PBKDF2', salt: saltBytes, iterations: iterations, hash: 'SHA-256' },
+                    baseKey, 256
+                );
+            } else {
+                // Argon2 not implemented in simple script, but usually Vaultwarden defaults to PBKDF2
+                throw new Error('Unsupported KDF type for web portal');
+            }
+
+            // MasterPasswordHash = PBKDF2(MasterKey, Password, 1, 256, SHA256)
+            const baseKey2 = await crypto.subtle.importKey(
+                'raw', masterKey, 'PBKDF2', false, ['deriveBits']
+            );
+            const hashBuffer = await crypto.subtle.deriveBits(
+                { name: 'PBKDF2', salt: passwordBytes, iterations: 1, hash: 'SHA-256' },
+                baseKey2, 256
+            );
+
+            return btoa(String.fromCharCode(...new Uint8Array(hashBuffer)));
+        }
+
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+
+            submitBtn.disabled = true;
+            messageDiv.textContent = 'Authenticating...';
+            messageDiv.className = '';
+
+            try {
+                // 1. Prelogin
+                const preloginRes = await fetch('/identity/accounts/prelogin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email })
+                });
+
+                if (!preloginRes.ok) throw new Error('Failed to fetch security parameters');
+                const preloginData = await preloginRes.json();
+
+                // 2. Client-side hashing
+                const passwordHash = await hashPassword(
+                    password, 
+                    email, 
+                    preloginData.Kdf, 
+                    preloginData.KdfIterations,
+                    preloginData.KdfMemory,
+                    preloginData.KdfParallelism
+                );
+
+                // 3. Token request
+                const formData = new URLSearchParams();
+                formData.append('grant_type', 'password');
+                formData.append('username', email);
+                formData.append('password', passwordHash);
+                formData.append('scope', 'api offline_access');
+                formData.append('client_id', 'web');
+                formData.append('device_identifier', 'web-portal');
+                formData.append('device_name', 'Web Browser');
+                formData.append('device_type', '3'); // Web
+
+                const tokenRes = await fetch('/identity/connect/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+
+                const tokenData = await tokenRes.json();
+
+                if (tokenRes.ok) {
+                    messageDiv.textContent = '';
+                    loginForm.classList.add('hidden');
+                    successContent.classList.remove('hidden');
+                    localStorage.setItem('access_token', tokenData.access_token);
+                    // In a real app, you'd redirect here
+                } else {
+                    throw new Error(tokenData.error || 'Invalid credentials');
+                }
+            } catch (err) {
+                messageDiv.textContent = err.message;
+                messageDiv.className = 'error';
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
