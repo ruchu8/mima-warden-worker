@@ -35,7 +35,8 @@ pub async fn alive(State(env): State<Arc<Env>>) -> Result<Json<String>, AppError
 #[worker::send]
 pub async fn version() -> Json<&'static str> {
     // Keep this in sync with `src/handlers/config.rs`'s `version`.
-    Json("2025.12.0")
+    // Returning a generic version to avoid easy fingerprinting.
+    Json("2.0.0")
 }
 
 #[derive(Debug, Deserialize)]
